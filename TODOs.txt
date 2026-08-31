@@ -1,0 +1,6 @@
+TODOs
+[] Fix overtime to be over once losing team lets go of button and prevent round win until then.
+[] Add a startup sequence for round start.
+    [] 10 second count down on leds. Bar fills up from bottom to top in RED then onces time is up, Flash Green LEDS for a couple seconds.
+[] Add configuration of win and round time. Can use the buttons for controls. Up down, hold for enter.
+[]
