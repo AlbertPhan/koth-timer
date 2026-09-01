@@ -48,6 +48,7 @@ extern "C" {
 #define PATTERN_SPEED 0.9f // 0.9 will be good
 #define PATTERN_SPEED_MIN 0.2f
 #define PATTERN_SPEED_MAX 1.5f // After testing the speed remove min and max "throttle" usage and set to pattern speed
+#define PATTERN_SPEED_WINNING 0.2f // Slower pattern for the team that is ahead
 #define ROUND_TIME_LED_EXTRA_LENGTH 1 // amount of extra leds (half) from
 
 // These define when the patterns are the fastest acceleration or deceleration patterns
@@ -230,6 +231,16 @@ static void render_rope(uint32_t blue_color, uint32_t red_color,
 
     const int timer_distance = (int) (round_progress * center);
 
+    // Calculate a separate phase for the slower winning pattern
+    float winning_phase = 0.0f;
+    if (round_active) {
+        winning_phase = (float)((now_ms - round_start_ms)) * PATTERN_SPEED_WINNING / 10.0f;  // Scaled to match cycle timing
+        while (winning_phase >= PATTERN_PERIOD) {
+            winning_phase -= PATTERN_PERIOD;
+        }
+    }
+    const int winning_phase_index = (int) winning_phase;
+
     uint32_t pixel_color_bright;
     uint32_t pixel_color_dim;
     uint32_t pixel_color_very_dim;
@@ -277,8 +288,19 @@ static void render_rope(uint32_t blue_color, uint32_t red_color,
                     } else {
                         pixel_color = hsv_to_grb_scaled(BLUE_TEAM_HUE_CONVERTED, 0.05f * intensity);
                     }  
+                } else if (round_active && blue_time_ms > red_time_ms) {
+                    // Show slower winning pattern when blue is ahead but not actively capping
+                    const int pattern_position = ((int)distance_from_center - winning_phase_index + PATTERN_PERIOD) % PATTERN_PERIOD;
+
+                    if (pattern_position < PATTERN_BRIGHT_LEDS) {
+                        pixel_color = hsv_to_grb_scaled(BLUE_TEAM_HUE_CONVERTED, intensity);
+                    } else if (pattern_position < PATTERN_BRIGHT_LEDS + PATTERN_DIM_LEDS) {
+                        pixel_color = hsv_to_grb_scaled(BLUE_TEAM_HUE_CONVERTED, 0.2f * intensity);
+                    } else {
+                        pixel_color = hsv_to_grb_scaled(BLUE_TEAM_HUE_CONVERTED, 0.05f * intensity);
+                    }
                 } else {
-                    // No capping: show base color with fade
+                    // No capping and not ahead: show base color with fade
                     pixel_color = hsv_to_grb_scaled(BLUE_TEAM_HUE_CONVERTED, intensity);
                 }
             }
@@ -304,8 +326,19 @@ static void render_rope(uint32_t blue_color, uint32_t red_color,
                     } else {
                         pixel_color = hsv_to_grb_scaled(RED_TEAM_HUE_CONVERTED, 0.05f * intensity);
                     }  
+                } else if (round_active && red_time_ms > blue_time_ms) {
+                    // Show slower winning pattern when red is ahead but not actively capping
+                    const int pattern_position = ((int)distance_from_center - winning_phase_index + PATTERN_PERIOD) % PATTERN_PERIOD;
+
+                    if (pattern_position < PATTERN_BRIGHT_LEDS) {
+                        pixel_color = hsv_to_grb_scaled(RED_TEAM_HUE_CONVERTED, intensity);
+                    } else if (pattern_position < PATTERN_BRIGHT_LEDS + PATTERN_DIM_LEDS) {
+                        pixel_color = hsv_to_grb_scaled(RED_TEAM_HUE_CONVERTED, 0.2f * intensity);
+                    } else {
+                        pixel_color = hsv_to_grb_scaled(RED_TEAM_HUE_CONVERTED, 0.05f * intensity);
+                    }
                 } else {
-                    // No capping: show base color with fade
+                    // No capping and not ahead: show base color with fade
                     pixel_color = hsv_to_grb_scaled(RED_TEAM_HUE_CONVERTED, intensity);
                 }
             }
