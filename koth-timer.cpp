@@ -130,6 +130,13 @@ static uint32_t hsv_to_grb(uint16_t hue, uint8_t saturation, uint8_t value) {
     return urgb_u32(red, green, blue);
 }
 
+static uint32_t hsv_to_grb_scaled(uint16_t hue, float brightness_scale) {
+    // Convert HSV to GRB with scaled brightness (value component).
+    // This creates a simpler dim effect compared to gamma-corrected intensity scaling.
+    uint8_t scaled_value = (uint8_t)(255.0f * brightness_scale + 0.5f);
+    return hsv_to_grb(hue, 255, scaled_value);
+}
+
 static uint32_t scale_color_intensity(uint32_t pixel_grb, float scale) {
     const float gamma = 2.2f;
     const float inv_gamma = 1.0f / gamma;
@@ -223,20 +230,19 @@ static void render_rope(uint32_t blue_color, uint32_t red_color,
 
     const int timer_distance = (int) (round_progress * center);
 
+    uint32_t pixel_color_bright;
+    uint32_t pixel_color_dim;
+    uint32_t pixel_color_very_dim;
+
     // Each team fills from the center of the rope out to their end.
     // Even a tiny score should light at least one LED, since the rope should always show activity.
-    int blue_fill = 0;
-    int red_fill = 0;
+    // Using floating-point fill allows for smooth fading at the LED boundary.
+    float blue_fill = 0.0f;
+    float red_fill = 0.0f;
 
-    blue_fill = (int) ((blue_time_ms * center) / win_time_ms);
-    if (blue_time_ms > 0 && blue_fill == 0) {
-        blue_fill = 1;
-    }
+    blue_fill = (blue_time_ms * center) / (float)win_time_ms;
 
-    red_fill = (int) ((red_time_ms * center) / win_time_ms);
-    if (red_time_ms > 0 && red_fill == 0) {
-        red_fill = 1;
-    }
+    red_fill = (red_time_ms * center) / (float)win_time_ms;
 
     // End-of-round flash: the winning team color pulses while the strip is otherwise idle.
     const bool flash_winner = !round_active && !tie_game && (blue_won || red_won);
@@ -250,45 +256,57 @@ static void render_rope(uint32_t blue_color, uint32_t red_color,
 
         // Keep the center neutral unless a team has actual fill
         if (pixel_index < center) {
-            const int distance_from_center = center - pixel_index;
+            const float distance_from_center = center - pixel_index;
 
             // Blue side fills from the middle toward LED 0.
-            if (blue_fill > 0 && distance_from_center <= blue_fill) {
-                pixel_color = blue_color;
+            if (blue_fill > 0.0f && distance_from_center - 1.0f < blue_fill) {
+                // Calculate fade intensity based on how much fill reaches this LED
+                float intensity = blue_fill - (distance_from_center - 1.0f);
+                if (intensity > 1.0f) intensity = 1.0f;  // Cap at full brightness
 
                 // Active blue cap uses the moving pattern to make the cap feel alive.
                 if (blue_capping) {
                     // Move the bright band outward from the center by subtracting the phase from
                     // the distance. As the phase increases, the band advances toward LED 0.
-                    const int pattern_position = (distance_from_center - phase_index + PATTERN_PERIOD) % PATTERN_PERIOD;
+                    const int pattern_position = ((int)distance_from_center - phase_index + PATTERN_PERIOD) % PATTERN_PERIOD;
+
                     if (pattern_position < PATTERN_BRIGHT_LEDS) {
-                        pixel_color = blue_color;
+                        pixel_color = hsv_to_grb_scaled(BLUE_TEAM_HUE_CONVERTED, intensity);
                     } else if (pattern_position < PATTERN_BRIGHT_LEDS + PATTERN_DIM_LEDS) {
-                        pixel_color = scale_color_intensity(blue_color, 0.2f);
+                        pixel_color = hsv_to_grb_scaled(BLUE_TEAM_HUE_CONVERTED, 0.2f * intensity);
                     } else {
-                        pixel_color = scale_color_intensity(blue_color, 0.05f);
-                    }
+                        pixel_color = hsv_to_grb_scaled(BLUE_TEAM_HUE_CONVERTED, 0.05f * intensity);
+                    }  
+                } else {
+                    // No capping: show base color with fade
+                    pixel_color = hsv_to_grb_scaled(BLUE_TEAM_HUE_CONVERTED, intensity);
                 }
             }
         } else if (pixel_index >= center) {
-            const int distance_from_center = pixel_index - center + 1; // Need to offset by 1 for red side since center is really 35
+            const float distance_from_center = pixel_index - center + 1; // Need to offset by 1 for red side since center is really 35
 
             // Red side fills from the middle toward the far end of the strip.
-            if (red_fill > 0 && distance_from_center <= red_fill) {
-                pixel_color = red_color;
+            if (red_fill > 0.0f && distance_from_center - 1.0f < red_fill) {
+                // Calculate fade intensity based on how much fill reaches this LED
+                float intensity = red_fill - (distance_from_center - 1.0f);
+                if (intensity > 1.0f) intensity = 1.0f;  // Cap at full brightness
 
                 // Active red cap uses the moving pattern to make the cap feel alive.
                 if (red_capping) {
                     // Move the bright band outward from the center by subtracting the phase from
                     // the distance. As the phase increases, the band advances toward the far end.
-                    const int pattern_position = (distance_from_center - phase_index + PATTERN_PERIOD) % PATTERN_PERIOD;
+                    const int pattern_position = ((int)distance_from_center - phase_index + PATTERN_PERIOD) % PATTERN_PERIOD;
+
                     if (pattern_position < PATTERN_BRIGHT_LEDS) {
-                        pixel_color = red_color;
+                        pixel_color = hsv_to_grb_scaled(RED_TEAM_HUE_CONVERTED, intensity);
                     } else if (pattern_position < PATTERN_BRIGHT_LEDS + PATTERN_DIM_LEDS) {
-                        pixel_color = scale_color_intensity(red_color, 0.2f);
+                        pixel_color = hsv_to_grb_scaled(RED_TEAM_HUE_CONVERTED, 0.2f * intensity);
                     } else {
-                        pixel_color = scale_color_intensity(red_color, 0.05f);
-                    }
+                        pixel_color = hsv_to_grb_scaled(RED_TEAM_HUE_CONVERTED, 0.05f * intensity);
+                    }  
+                } else {
+                    // No capping: show base color with fade
+                    pixel_color = hsv_to_grb_scaled(RED_TEAM_HUE_CONVERTED, intensity);
                 }
             }
         }
