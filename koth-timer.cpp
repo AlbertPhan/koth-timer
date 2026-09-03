@@ -20,10 +20,22 @@
 #include "hardware/clocks.h"
 #include "hardware/pio.h"
 #include "ws2812.pio.h"
+#include "hardware/i2c.h"
+
+#include "pico-oled/pico-oled.hpp"
+#include "pico-oled/gfx_font.h"
+#include "pico-oled/font/press_start_2p.h"
+#include "pico-oled/font/too_simple.h"
+
 
 extern "C" {
 #include "pico/bootrom.h"
 }
+
+#define DISPLAY_I2C_ADDR _u(0x3C) //_u(0x3C)
+#define DISPLAY_WIDTH _u(128)
+#define DISPLAY_HEIGHT _u(64)
+
 // Pins
 #define WS2812_PIN 3
 #define BLUE_BUTTON_PIN 2
@@ -35,21 +47,23 @@ extern "C" {
 #define ADC_REFERENCE_VOLTAGE 3.3f
 
 // Game Stuff
-#define DEFAULT_WIN_TIME 60 // Time to hold to win round
-#define DEFAULT_ROUND_TIME 300 // Time for round to end
+#define DEFAULT_WIN_TIME 5 // Time to hold to win round
+#define DEFAULT_ROUND_TIME 10 // Time for round to end
+#define OVERTIME_MS 10000 // Time losing team has to cap during overtime
 
 #define FLASH_TIME_MS 500 // Time between flashing
+#define OVERTIME_FLASH_TIME_MS 150 // Faster flash interval for the overtime timer
 
 // LED 
 #define PATTERN_BRIGHT_LEDS 6
 #define PATTERN_DIM_LEDS 4
 #define PATTERN_VERY_DIM_LEDS 2
 #define PATTERN_PERIOD (PATTERN_BRIGHT_LEDS + PATTERN_DIM_LEDS + PATTERN_VERY_DIM_LEDS)
-#define PATTERN_SPEED 0.9f // 0.9 will be good
-#define PATTERN_SPEED_MIN 0.2f
-#define PATTERN_SPEED_MAX 1.5f // After testing the speed remove min and max "throttle" usage and set to pattern speed
-#define PATTERN_SPEED_WINNING 0.2f // Slower pattern for the team that is ahead
-#define ROUND_TIME_LED_EXTRA_LENGTH 1 // amount of extra leds (half) from
+#define PATTERN_SPEED 1.5f //
+#define PATTERN_SPEED_MIN 0.2f // TESTING with POT
+#define PATTERN_SPEED_MAX 1.5f // TESTING with POT
+#define PATTERN_SPEED_WINNING 0.1f // Slower pattern for the team that is ahead
+#define ROUND_TIME_LED_EXTRA_LENGTH 1 // amount of extra leds (half) from Round time led
 
 // These define when the patterns are the fastest acceleration or deceleration patterns
 #define THROTTLE_MAX_VOLTAGE 1.65f // Remember to convert to 3.3 V range not 5.0V
@@ -66,9 +80,12 @@ extern "C" {
 #define BLUE_TEAM_HUE_SATURATION 240
 #define ROUND_TIMER_HUE 120
 #define ROUND_TIMER_HUE_SATURATION 240
+#define OVERTIME_TIMER_HUE 120  //
+#define OVERTIME_TIMER_HUE_SATURATION 240
 #define RED_TEAM_HUE_CONVERTED (RED_TEAM_HUE * HUE_FACTOR)
 #define BLUE_TEAM_HUE_CONVERTED (BLUE_TEAM_HUE * HUE_FACTOR)
-#define ROUND_TIMER_HUE_CONVERTED (ROUND_TIMER_HUE * HUE_FACTOR)// Purple (approx 270 degrees)
+#define ROUND_TIMER_HUE_CONVERTED (ROUND_TIMER_HUE * HUE_FACTOR)// Green (approx 120 degrees)
+#define OVERTIME_TIMER_HUE_CONVERTED (OVERTIME_TIMER_HUE * HUE_FACTOR) // Purple (approx 300 degrees)
 
 static inline uint32_t urgb_u32(uint8_t r, uint8_t g, uint8_t b) {
     return ((uint32_t) r << 8) | ((uint32_t) g << 16) | b;
@@ -212,11 +229,13 @@ static void fill_bar(uint32_t bright_color, uint32_t dim_color,
 // Blue is on the LED 0 side and Red is on the far end of the strip.
 // The score fill grows outward from the middle of the rope toward each team's end.
 static void render_rope(uint32_t blue_color, uint32_t red_color,
-    uint32_t neutral_color, uint32_t round_timer_color,
+    uint32_t neutral_color, uint32_t round_timer_color, uint32_t overtime_timer_color,
     uint32_t blue_time_ms, uint32_t red_time_ms, uint32_t win_time_ms,
     bool blue_capping, bool red_capping, bool blue_won, bool red_won,
-    bool round_active, bool tie_game, uint32_t now_ms,
-    uint32_t round_start_ms, uint32_t round_time_ms, int phase_index) {
+    bool round_active, bool tie_game, bool overtime_active, uint32_t now_ms,
+    uint32_t round_start_ms, uint32_t round_time_ms, uint32_t overtime_end_time_ms,
+    uint32_t overtime_time_remaining_ms,
+    int phase_index) {
     const int center = NUM_LEDS / 2;
 
     float round_progress = 0.0f;
@@ -233,7 +252,7 @@ static void render_rope(uint32_t blue_color, uint32_t red_color,
 
     // Calculate a separate phase for the slower winning pattern
     float winning_phase = 0.0f;
-    if (round_active) {
+    if (round_active || overtime_active) {
         winning_phase = (float)((now_ms - round_start_ms)) * PATTERN_SPEED_WINNING / 10.0f;  // Scaled to match cycle timing
         while (winning_phase >= PATTERN_PERIOD) {
             winning_phase -= PATTERN_PERIOD;
@@ -288,7 +307,7 @@ static void render_rope(uint32_t blue_color, uint32_t red_color,
                     } else {
                         pixel_color = hsv_to_grb_scaled(BLUE_TEAM_HUE_CONVERTED, 0.05f * intensity);
                     }  
-                } else if (round_active && blue_time_ms > red_time_ms) {
+                } else if ((round_active || overtime_active) && blue_time_ms > red_time_ms) {
                     // Show slower winning pattern when blue is ahead but not actively capping
                     const int pattern_position = ((int)distance_from_center - winning_phase_index + PATTERN_PERIOD) % PATTERN_PERIOD;
 
@@ -326,7 +345,7 @@ static void render_rope(uint32_t blue_color, uint32_t red_color,
                     } else {
                         pixel_color = hsv_to_grb_scaled(RED_TEAM_HUE_CONVERTED, 0.05f * intensity);
                     }  
-                } else if (round_active && red_time_ms > blue_time_ms) {
+                } else if ((round_active || overtime_active) && red_time_ms > blue_time_ms) {
                     // Show slower winning pattern when red is ahead but not actively capping
                     const int pattern_position = ((int)distance_from_center - winning_phase_index + PATTERN_PERIOD) % PATTERN_PERIOD;
 
@@ -364,10 +383,49 @@ static void render_rope(uint32_t blue_color, uint32_t red_color,
                 }
             }
         }
+        
+        // A separate overtime indicator: purple flashing LEDs during overtime
+        if (overtime_active) {
+            bool overtime_flash_on = false;
+            if ((now_ms / OVERTIME_FLASH_TIME_MS) % 2u == 0u) {
+                overtime_flash_on = true;
+            }
+
+            // Calculate progress through overtime (similar to round timer)
+            uint32_t overtime_elapsed_ms = 0u;
+            if (now_ms < overtime_end_time_ms) {
+                overtime_elapsed_ms = overtime_end_time_ms - now_ms;
+            }
+            uint32_t overtime_duration_ms = OVERTIME_MS;
+            if (overtime_time_remaining_ms > 0u) {
+                overtime_duration_ms = overtime_time_remaining_ms;
+            }
+            float overtime_progress = 1.0f -
+                ((float)overtime_elapsed_ms / (float)overtime_duration_ms);
+            if (overtime_progress < 0.0f) overtime_progress = 0.0f;
+            if (overtime_progress > 1.0f) overtime_progress = 1.0f;
+            
+            const int overtime_timer_distance = (int)(overtime_progress * center);
+            const int blue_overtime_led = center - overtime_timer_distance;
+            const int red_overtime_led = center + overtime_timer_distance;
+            
+            if ((pixel_index >= blue_overtime_led - ROUND_TIME_LED_EXTRA_LENGTH &&
+                pixel_index <= blue_overtime_led) || 
+                (pixel_index >= red_overtime_led - ROUND_TIME_LED_EXTRA_LENGTH &&
+                pixel_index <= red_overtime_led)) {
+                // Flash the overtime timer LED
+                if (overtime_flash_on) {
+                    pixel_color = overtime_timer_color;
+                }
+            }
+        }
 
         // Flash the winning team color after the round ends.
         if (flash_winner && !flash_on) {
-            if (blue_won && pixel_index < center) { // when blue won and pixel is on blue side turn off
+            // Probably will never happen that blue and red won at same time
+            if (tie_game){ // flash both teams colors
+                pixel_color = 0u;
+            } else if (blue_won && pixel_index < center) { // when blue won and pixel is on blue side turn off
                 pixel_color = 0u;
             } else if (red_won && pixel_index >= center) {
                 pixel_color = 0u;
@@ -397,12 +455,32 @@ int main() {
     adc_gpio_init(THROTTLE_ADC_GPIO);
     adc_select_input(THROTTLE_ADC_CHANNEL);
 
+    // Init i2c and configure it's GPIO pins
+    // i2c_init(i2c_default, 400 * 1000);   // Standard i2c clock (400kHz)
+    i2c_init(i2c_default, 1000 * 1000);     // Fast clock (1000 kHz), some SSD1306 devices may work up to 1100-1200 kHz
+    gpio_set_function(PICO_DEFAULT_I2C_SDA_PIN, GPIO_FUNC_I2C);
+    gpio_set_function(PICO_DEFAULT_I2C_SCL_PIN, GPIO_FUNC_I2C);
+    gpio_pull_up(PICO_DEFAULT_I2C_SDA_PIN);
+    gpio_pull_up(PICO_DEFAULT_I2C_SCL_PIN);
+
+    // Init display with SSD1309 driver IC and a reset pin
+    pico_oled display(OLED_SSD1309, DISPLAY_I2C_ADDR, DISPLAY_WIDTH, DISPLAY_HEIGHT, /*reset_gpio=*/ 15);   
+
+    // Init display with SSD1306 driver IC
+    // pico_oled display(OLED_SSD1306, DISPLAY_I2C_ADDR, DISPLAY_WIDTH, DISPLAY_HEIGHT);       
+
+    display.oled_init();
+    display.set_font(press_start_2p);
+    display.fill(0);    // Clear display    
+    display.set_cursor(0,0);
+
     const uint offset = pio_add_program(pio0, &ws2812_program);
     ws2812_program_init(pio0, 0, offset, WS2812_PIN, 800000, false);
 
     const uint32_t blue_team_color = hsv_to_grb(BLUE_TEAM_HUE_CONVERTED, BLUE_TEAM_HUE_SATURATION, 255);   // Blue team color.
     const uint32_t red_team_color = hsv_to_grb(RED_TEAM_HUE_CONVERTED, RED_TEAM_HUE_SATURATION, 255);      // Red team color.
     const uint32_t round_timer_color = hsv_to_grb(ROUND_TIMER_HUE_CONVERTED, ROUND_TIMER_HUE_SATURATION, 200); // Round timer LED.
+    const uint32_t overtime_timer_color = hsv_to_grb(OVERTIME_TIMER_HUE_CONVERTED, OVERTIME_TIMER_HUE_SATURATION, 200); // Overtime timer LED.
     const uint32_t neutral_rope_color = 0u;                        // Dark rope when idle.
 
     const uint32_t win_time_ms = DEFAULT_WIN_TIME * 1000u;
@@ -415,8 +493,16 @@ int main() {
     bool round_active = true;
     bool blue_won = false;
     bool red_won = false;
+    bool blue_leading = false;
+    bool red_leading = false;
     bool tie_game = false;
     float phase = 0.0f;
+    
+    // Overtime state
+    uint32_t overtime_time_remaining_ms = 0;
+    uint32_t overtime_end_time_ms = 0;
+    bool overtime_active = false;
+    uint8_t overtime_flips = 0;  // Track how many times lead changed during overtime
 
     while (true) {
         /*
@@ -425,7 +511,7 @@ int main() {
         Each team accumulates time when their team's button is pressed
         Team wins when their time reaches win time.
         Round is over when round time has elapsed. Team with more time wins.
-        Overtime mechanic: If losing team is pressing button when game ends, they can accumulate time until button is let go.
+        Overtime mechanic: 5 second for losing team to start capping. Resets everytime they let go of button.
 
         LED rope logic.
         The rope is split into 2 halves. 
@@ -441,29 +527,93 @@ int main() {
         const bool blue_pressed = button_pressed(BLUE_BUTTON_PIN);
         const bool red_pressed = button_pressed(RED_BUTTON_PIN);
 
+        display.fill(0);    // Clear display    
+        display.set_cursor(0,0);
+
         if (round_active) {
             if (blue_pressed && !red_pressed) {
                 blue_time_ms += dt_ms;
             } else if (red_pressed && !blue_pressed) {
                 red_time_ms += dt_ms;
             }
-
+            
+            // check who leading
+            if (blue_time_ms > red_time_ms) {
+                blue_leading = true;
+                red_leading = false;
+            } else if (red_time_ms > blue_time_ms) {
+                red_leading = true;
+                blue_leading = false;
+            } else {
+                blue_leading = false;
+                red_leading = false;
+            }
             const uint32_t round_elapsed_ms = now_ms - round_start_ms;
 
+            // if either team score reaches win time
             if (blue_time_ms >= win_time_ms || red_time_ms >= win_time_ms) {
                 round_active = false;
                 blue_won = blue_time_ms > red_time_ms;
                 red_won = red_time_ms > blue_time_ms;
-                if (blue_won) {
-                    red_won = false;
-                }
-                if (red_won) {
-                    blue_won = false;
-                }
+                // Round Time up
             } else if (round_elapsed_ms >= round_time_ms) {
+                // Start overtime when round time is up
+                overtime_active = true;
+                overtime_flips = 0;
+                overtime_time_remaining_ms = OVERTIME_MS;
+                overtime_end_time_ms = now_ms + OVERTIME_MS;
                 round_active = false;
                 blue_won = false;
                 red_won = false;
+            }
+        } else if (overtime_active) {
+            // Overtime mechanic: losing team gets time to cap
+            // Each time they release and try again, timer resets
+            // If they take the lead, the other team gets overtime at reduced duration
+
+
+            // Check if lead flipped during overtime
+            bool lead_flipped = false;
+            if (blue_leading && red_time_ms > blue_time_ms) {
+                blue_leading = false;
+                red_leading = true;
+                lead_flipped = true;
+                overtime_flips++;
+            } else if (red_leading && blue_time_ms > red_time_ms) {
+                red_leading = false;
+                blue_leading = true;
+                lead_flipped = true;
+                overtime_flips++;
+            }
+            
+            // If lead flipped, give the new winning team reduced time by half for each flip
+            if (lead_flipped) {
+                float time_multiplier = powf(0.5f, (float)overtime_flips);
+                overtime_time_remaining_ms = (uint32_t)(OVERTIME_MS * time_multiplier);
+                overtime_end_time_ms = now_ms + overtime_time_remaining_ms;
+            }
+            
+            // Keep overtime full while the non-leading team is capping.
+            bool blue_capping_now = !blue_leading && blue_pressed && !red_pressed;
+            bool red_capping_now = !red_leading && red_pressed && !blue_pressed;
+            
+            // Reset overtime timer if the losing team is actively capping
+            if (blue_capping_now || red_capping_now) {
+                overtime_end_time_ms = now_ms + overtime_time_remaining_ms;
+            }
+            
+            // Acculate time for the team that is currently capping during overtime
+            if (red_pressed && !blue_pressed) {
+                red_time_ms += dt_ms;
+            } else if (blue_pressed && !red_pressed) {
+                blue_time_ms += dt_ms;
+            }
+            
+            // Check if overtime expired
+            if (now_ms >= overtime_end_time_ms) {
+                overtime_active = false;
+                // Overtime expired - game is truly over
+                // Determine team winner
                 if (blue_time_ms > red_time_ms) {
                     blue_won = true;
                 } else if (red_time_ms > blue_time_ms) {
@@ -472,14 +622,6 @@ int main() {
                     // This basically should never happen
                     tie_game = true;
                 }
-            }
-        } else if (!tie_game) {
-            // Overtime: only the losing team can continue scoring while it is still holding the button.
-            // TODO: make it when they let go of button overtime is over.
-            if (blue_won && red_pressed && !blue_pressed) {
-                red_time_ms += dt_ms;
-            } else if (red_won && blue_pressed && !red_pressed) {
-                blue_time_ms += dt_ms;
             }
         }
 
@@ -507,8 +649,15 @@ int main() {
         }
 
         // The rope renders the score state instead of the ADC test pattern.
-        const bool blue_capping = round_active && blue_pressed && !red_pressed;
-        const bool red_capping = round_active && red_pressed && !blue_pressed;
+        bool blue_capping = false;
+        bool red_capping = false;
+        if (round_active) {
+            blue_capping = blue_pressed && !red_pressed;
+            red_capping = red_pressed && !blue_pressed;
+        } else if (overtime_active) {
+            blue_capping = !blue_leading && blue_pressed && !red_pressed;
+            red_capping = !red_leading && red_pressed && !blue_pressed;
+        }
 
         // This render uses a centered fill: the score grows from the middle toward each side.
         const int phase_index = (int) phase;
@@ -516,6 +665,7 @@ int main() {
                     red_team_color,
                     neutral_rope_color,
                     round_timer_color,
+                    overtime_timer_color,
                     blue_time_ms,
                     red_time_ms,
                     win_time_ms,
@@ -525,10 +675,20 @@ int main() {
                     red_won,
                     round_active,
                     tie_game,
+                    overtime_active,
                     now_ms,
                     round_start_ms,
                     round_time_ms,
+                    overtime_end_time_ms,
+                    overtime_time_remaining_ms,
                     phase_index);
+
+        const char *round_status = "done";
+        if (round_active) {
+            round_status = "live";
+        } else if (tie_game) {
+            round_status = "tie";
+        }
 
         printf("B:%lu R:%lu blue:%d red:%d boot:%d round:%s pattern_speed:%f\r",
                (unsigned long) blue_time_ms,
@@ -536,9 +696,23 @@ int main() {
                blue_pressed,
                red_pressed,
                button_pressed(BOOT_BUTTON_PIN),
-               round_active ? "live" : (tie_game ? "tie" : "done"),
+               round_status,
                 pattern_speed);
-
+        // also show debug on display
+        display.print_num("B:%d\n",blue_time_ms);
+        display.print_num("R:%d\n",red_time_ms);
+        if (round_active){
+            display.print("Round: 1\n");
+        } else {
+            display.print("Round: 0\n");
+        }
+        if (overtime_active){
+            display.print("Overtime: 1\n");
+        } else {
+            display.print("Overtime: 0\n");
+        }
+        display.print_num("Overtimeflips: %d\n",overtime_flips);
+        
         // Do button stuff here
         if (button_pressed(BOOT_BUTTON_PIN)) {
             sleep_ms(20);
@@ -546,7 +720,8 @@ int main() {
                 reset_usb_boot(0, 0);
             }
         }
-
+        
+        display.render();
         sleep_ms(10); // Need sleep to show leds
     }
     return 0;

@@ -35,7 +35,10 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(koth-timer koth-timer.cpp )
+add_executable(koth-timer 
+koth-timer.cpp
+pico-oled/pico-oled.cpp
+)
 
 pico_set_program_name(koth-timer "koth-timer")
 pico_set_program_version(koth-timer "0.1")
@@ -50,7 +53,7 @@ target_link_libraries(koth-timer
         #pico_multicore 
         #pico_sync
         #pico_malloc
-        #hardware_i2c 
+        hardware_i2c 
         hardware_adc 
         hardware_pwm 
         #hardware_uart 
