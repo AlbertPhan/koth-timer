@@ -655,8 +655,8 @@ int main() {
             blue_capping = blue_pressed && !red_pressed;
             red_capping = red_pressed && !blue_pressed;
         } else if (overtime_active) {
-            blue_capping = !blue_leading && blue_pressed && !red_pressed;
-            red_capping = !red_leading && red_pressed && !blue_pressed;
+            blue_capping = blue_pressed && !red_pressed;
+            red_capping = red_pressed && !blue_pressed;
         }
 
         // This render uses a centered fill: the score grows from the middle toward each side.
