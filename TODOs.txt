@@ -8,10 +8,8 @@ Minor bugs:
 [x] Overtime: Fix when team gains leading while capping, doesn't show capping pattern
 
     
-[] Add a startup sequence for round start.
-    [] 10 second count down on leds. Bar can start red full then go towards middle
-    Flash Green LEDS for a couple seconds.
-    Beep
+[x] Add a startup sequence for round start.
+    [x] 10 second count down on leds.
 [x] Add Round Timer LED? Could be a single LED that moves from center to each end
 [] Add configuration of win and round time. Can use the buttons and a pot for controls. 
     - Pot to control adjustment, do like 5 sec increments
