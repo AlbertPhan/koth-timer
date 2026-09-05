@@ -164,20 +164,22 @@ void draw_menu()
     display.set_cursor(0,0);
     display.print("SETTINGS\n");
     uint8_t menu_text_y = display.get_font_height(); // first element after settings title
-    // Loop through menu items and display the text. If the menu is selected, draw boxed text
+    // Loop through menu items and display the text. If the menu is selected draw ">" in front of text
     for (uint8_t menu_index = GAME_START; menu_index < MAX_MENU_ITEMS; menu_index++)
     {
         if (menu_index == menu_item)
         {
             // display draw with box
-            display.draw_boxed_text(menu_names[menu_index],1,1,0,menu_text_y);
+            display.print(">");
+            display.print(menu_names[menu_index]);
         }
         else
         {
             // display draw without box
+            display.print(" ");
             display.print(menu_names[menu_index]);
-            display.print("\n");
         }
+        display.print("\n\r");
         menu_text_y += display.get_font_height(); // Move to next row
     }
     display.render();
