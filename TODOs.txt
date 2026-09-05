@@ -21,6 +21,7 @@ Minor bugs:
      - eg double beeps for capping
     [x] Use for timers
 [x] Added Screen
+[] Fix Menu display, dont draw boxes for selected text just do ">"
 
 [] Added debug info back into screen during gameplay
 
