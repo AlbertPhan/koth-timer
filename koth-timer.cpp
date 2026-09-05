@@ -794,46 +794,72 @@ int main() {
             }
         } else if (overtime_active) {
             // Overtime mechanic: losing team gets time to cap
-            // Each time they release and try again, timer resets
+            // Overtime pauses while losing team is capping
             // If they take the lead, the other team gets overtime at reduced duration
 
 
-            // Check if lead flipped during overtime
-            bool lead_flipped = false;
-            if (blue_leading && red_time_ms > blue_time_ms) {
-                blue_leading = false;
-                red_leading = true;
-                lead_flipped = true;
-                overtime_flips++;
-            } else if (red_leading && blue_time_ms > red_time_ms) {
-                red_leading = false;
-                blue_leading = true;
-                lead_flipped = true;
-                overtime_flips++;
-            }
-            
-            // If lead flipped, give the new winning team reduced time by half for each flip
-            if (lead_flipped) {
-                float time_multiplier = powf(0.5f, (float)overtime_flips);
-                overtime_current_max_time_ms = (uint32_t)(OVERTIME_MS * time_multiplier);
-                overtime_end_time_ms = now_ms + overtime_current_max_time_ms;
-            }
-            
-            // Keep overtime full while the non-leading team is capping.
-            bool blue_capping_now = !blue_leading && blue_pressed && !red_pressed;
-            bool red_capping_now = !red_leading && red_pressed && !blue_pressed;
-            
-            // Reset overtime timer if the losing team is actively capping
+            // Save who was leading at the start of this update
+            bool old_blue_leading = blue_leading;
+            bool old_red_leading = red_leading;
+
+
+            // Keep overtime alive while the current losing team is capping
+            bool blue_capping_now = !old_blue_leading && blue_pressed && !red_pressed;
+            bool red_capping_now  = !old_red_leading  && red_pressed && !blue_pressed;
+
             if (blue_capping_now || red_capping_now) {
                 overtime_end_time_ms = now_ms + overtime_current_max_time_ms;
             }
-            
-            // Acculate time for the team that is currently capping during overtime
+
+
+            // Accumulate time for the team currently capping
             if (red_pressed && !blue_pressed) {
                 red_time_ms += dt_ms;
-            } else if (blue_pressed && !red_pressed) {
+            }
+            else if (blue_pressed && !red_pressed) {
                 blue_time_ms += dt_ms;
             }
+
+
+            // Determine who is leading AFTER adding the new time
+            bool new_blue_leading = old_blue_leading;
+            bool new_red_leading = old_red_leading;
+
+            if (blue_time_ms > red_time_ms) {
+                new_blue_leading = true;
+                new_red_leading = false;
+            }
+            else if (red_time_ms > blue_time_ms) {
+                new_blue_leading = false;
+                new_red_leading = true;
+            }
+            // If equal, keep the previous leader.
+            // This prevents the leader from disappearing during a tie.
+
+
+            // Check if the lead actually flipped
+            bool lead_flipped =
+                (old_blue_leading && new_red_leading) ||
+                (old_red_leading && new_blue_leading);
+
+            // Handle a lead flip
+            if (lead_flipped) {
+                overtime_flips++;
+
+                float time_multiplier = powf(0.5f, (float)overtime_flips);
+
+                overtime_current_max_time_ms =
+                    (uint32_t)(OVERTIME_MS * time_multiplier);
+
+                overtime_end_time_ms =
+                    now_ms + overtime_current_max_time_ms;
+            }
+
+
+            // Commit the new leader
+            blue_leading = new_blue_leading;
+            red_leading = new_red_leading;
+
             
             // Check if overtime expired
             if (now_ms >= overtime_end_time_ms) {
@@ -913,7 +939,8 @@ int main() {
 
         // Play sounds based on gameplay state
         // Testing Round active = 1 hz beep
-        if(blue_capping || red_capping){
+        // Only play the capping sound if the non leading team is capping during overtime.
+        if((blue_capping && (!blue_leading && overtime_active)) || (red_capping && (!red_leading && overtime_active))){
             start_beep_pattern(BeepPattern::DOUBLE_ONE_HZ,now_ms);
         }
         else if (overtime_active){

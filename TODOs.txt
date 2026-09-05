@@ -1,8 +1,8 @@
 TODOs
 
 Minor bugs:
-[] If both teams have 0 points during overtime, overtime flips dont seem to work
-[] During overtime if leading team is capping it will play the capping sound but I think it should play the overtime beeping.
+[x] If both teams have 0 points during overtime, overtime flips dont seem to work
+[x] During overtime if leading team is capping it will play the capping sound but I think it should play the overtime beeping.
 
 [x] Fix overtime to be over once losing team lets go of button and prevent round win until then.
 [x] Overtime: Fix when team gains leading while capping, doesn't show capping pattern
