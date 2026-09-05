@@ -1003,12 +1003,14 @@ int main() {
                 play_beep_pattern_once(BeepPattern::GAME_OVER,now_ms);
                 game_over_play_sound = false; // play sound once
             }
-        } else if (round_start_active)
+        } else if (round_start_active || buzzer.pattern == BeepPattern::GAME_START)
         {
             if(game_start_play_sound){
                 play_beep_pattern_once(BeepPattern::GAME_START,now_ms);
                 game_start_play_sound = false;
             }
+        } else {
+            stop_buzzer();
         }
         
         
