@@ -1,14 +1,28 @@
 TODOs
+
+Minor bugs:
+[] If both teams have 0 points during overtime, overtime flips dont seem to work
+[] During overtime if leading team is capping it will play the capping sound but I think it should play the overtime beeping.
+
 [x] Fix overtime to be over once losing team lets go of button and prevent round win until then.
-[] Overtime: Fix when team gains leading while capping, doesn't show capping pattern
+[x] Overtime: Fix when team gains leading while capping, doesn't show capping pattern
+
     
 [] Add a startup sequence for round start.
     [] 10 second count down on leds. Bar can start red full then go towards middle
     Flash Green LEDS for a couple seconds.
+    Beep
 [x] Add Round Timer LED? Could be a single LED that moves from center to each end
 [] Add configuration of win and round time. Can use the buttons and a pot for controls. 
     - Pot to control adjustment, do like 5 sec increments
     - 1 of the footswitches to change editing.
+    - Enter button
+[] Add start round option in oled
+[x] Add Buzzer
+    [x] Add 3+ levels of beeping, 1hz, 3hz, 5hz. Could also have different types of beats for gameplay
+     - eg double beeps for capping
+    [x] Use for timers
+    
 [x] Added Screen
 
 Stretch Goals:
