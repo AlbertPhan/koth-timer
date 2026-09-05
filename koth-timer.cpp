@@ -49,6 +49,11 @@ extern "C" {
 #define NUM_LEDS 70 // 150 is the led rope but it's too big
 #define ADC_REFERENCE_VOLTAGE 3.3f
 
+// Buttons
+#define BUTTON_LOCK_TIME_MS 10
+#define BUTTON_LONG_PRESS_MS 500
+#define BUTTON_RETRIGGER_MS 250
+
 // Game Stuff
 #define DEFAULT_WIN_TIME 5 // Time to hold to win round
 #define DEFAULT_ROUND_TIME 10 // Time for round to end
@@ -92,6 +97,7 @@ extern "C" {
 #define ROUND_TIMER_HUE_CONVERTED (ROUND_TIMER_HUE * HUE_FACTOR)// Green (approx 120 degrees)
 #define OVERTIME_TIMER_HUE_CONVERTED (OVERTIME_TIMER_HUE * HUE_FACTOR) // Purple (approx 300 degrees)
 
+
 static inline uint32_t urgb_u32(uint8_t r, uint8_t g, uint8_t b) {
     return ((uint32_t) r << 8) | ((uint32_t) g << 16) | b;
 }
@@ -100,10 +106,131 @@ static inline void put_pixel(uint32_t pixel_grb) {
     pio_sm_put_blocking(pio0, 0, pixel_grb << 8u);
 }
 
+
+// Button Stuff
 static inline bool button_pressed(uint gpio) {
     return !gpio_get(gpio);
 }
 
+typedef enum
+{
+    BUTTON_BLUE,
+    BUTTON_RED,
+    BUTTON_ENTER,
+    BUTTON_BOOT,
+    NUM_BUTTONS,
+} btn_map;
+
+// Menu stuff
+enum MenuItem {
+    GAME_START,
+    ROUND_TIME,
+    WIN_TIME,
+    MAX_MENU_ITEMS
+};
+
+// Init display with SSD1309 driver IC and a reset pin
+pico_oled display(OLED_SSD1309, DISPLAY_I2C_ADDR, DISPLAY_WIDTH, DISPLAY_HEIGHT, /*reset_gpio=*/ 15);
+
+uint8_t menu_item = GAME_START;
+bool menu_active = true; // Start in menu mode for now, can change later
+
+// Make sure the index matches the enum MenuItem
+const char* menu_names[] = {
+    "GAME START",
+    "ROUND TIME",
+    "WIN TIME"
+};
+
+uint8_t btn_new_state[NUM_BUTTONS];
+absolute_time_t btn_poll_time;
+uint btn_time_diff;
+uint8_t btn_state[NUM_BUTTONS];
+uint8_t btn_active[NUM_BUTTONS];
+uint8_t btn_gpio[NUM_BUTTONS];
+uint8_t btn_pressed[NUM_BUTTONS];
+uint8_t btn_held[NUM_BUTTONS];
+absolute_time_t btn_init;
+absolute_time_t btn_lockouts[NUM_BUTTONS];
+
+bool waiting_for_round_start = true;
+bool round_start_active = false;
+uint32_t round_start_countdown_ms = 0;
+bool round_start_requested = false;
+
+void draw_menu()
+{
+    display.fill(0); // clear display
+    display.set_cursor(0,0);
+    display.print("SETTINGS\n");
+    uint8_t menu_text_y = display.get_font_height(); // first element after settings title
+    // Loop through menu items and display the text. If the menu is selected, draw boxed text
+    for (uint8_t menu_index = GAME_START; menu_index < MAX_MENU_ITEMS; menu_index++)
+    {
+        if (menu_index == menu_item)
+        {
+            // display draw with box
+            display.draw_boxed_text(menu_names[menu_index],1,1,0,menu_text_y);
+        }
+        else
+        {
+            // display draw without box
+            display.print(menu_names[menu_index]);
+            display.print("\n");
+        }
+        menu_text_y += display.get_font_height(); // Move to next row
+    }
+    display.render();
+}
+
+void menu_up()
+{
+    menu_item++;
+    if (menu_item >= MAX_MENU_ITEMS)
+        menu_item = GAME_START;
+
+    draw_menu();
+}
+
+void menu_down()
+{
+    if(menu_item == GAME_START)
+        menu_item = MAX_MENU_ITEMS-1;
+    else
+        menu_item--;
+
+    draw_menu();
+}
+
+void handle_menu()
+{
+    // just for now, we'll just exit the menu on enter press, but we can add more functionality later
+    if (btn_pressed[BUTTON_ENTER]) {
+        switch (menu_item) {
+            case GAME_START:
+                printf("Selected GAME START\n");
+                waiting_for_round_start = false;
+                round_start_requested = true;
+                menu_active = false;
+                break;
+
+            case ROUND_TIME:
+                printf("Selected ROUND TIME\n");
+                break;
+
+            case WIN_TIME:
+                printf("Selected WIN TIME\n");
+                break;
+        }
+    }
+
+    if(btn_pressed[BUTTON_BLUE]) {
+        menu_up();
+    }
+    else if(btn_pressed[BUTTON_RED]) {
+        menu_down();
+    }
+}
 // Buzzer
 enum class BeepPattern {
     NONE,
@@ -286,8 +413,8 @@ static void update_buzzer(uint32_t now_ms,uint32_t overtime_remaining_ms) {
 
             float progress = 1.0f - remaining_ratio;
 
-            // Nonlinear acceleration: 1 Hz -> 5 Hz
-            float frequency = 1.0f + 4.0f * (progress * progress);
+            // Nonlinear acceleration: 1 Hz -> 7 Hz
+            float frequency = 1.0f + 6.0f * (progress * progress);
 
             buzzer.on = !buzzer.on;
             buzzer_output(buzzer.on);
@@ -680,6 +807,10 @@ static void render_rope(uint32_t blue_color, uint32_t red_color,
     }
 }
 
+
+
+
+
 int main() {
     stdio_init_all();
 
@@ -716,8 +847,6 @@ int main() {
     gpio_pull_up(PICO_DEFAULT_I2C_SDA_PIN);
     gpio_pull_up(PICO_DEFAULT_I2C_SCL_PIN);
 
-    // Init display with SSD1309 driver IC and a reset pin
-    pico_oled display(OLED_SSD1309, DISPLAY_I2C_ADDR, DISPLAY_WIDTH, DISPLAY_HEIGHT, /*reset_gpio=*/ 15);   
 
     // Init display with SSD1306 driver IC
     // pico_oled display(OLED_SSD1306, DISPLAY_I2C_ADDR, DISPLAY_WIDTH, DISPLAY_HEIGHT);       
@@ -741,13 +870,28 @@ int main() {
     const uint32_t initial_now_ms = to_ms_since_boot(get_absolute_time());
     const uint32_t round_start_duration_ms = ROUND_START_TIME * 1000u;
 
+    // Buttons
+    btn_gpio[BUTTON_BLUE] = BLUE_BUTTON_PIN;
+    btn_gpio[BUTTON_RED] = RED_BUTTON_PIN;
+    btn_gpio[BUTTON_ENTER] = ENTER_BUTTON_PIN;
+    btn_gpio[BUTTON_BOOT] = BOOT_BUTTON_PIN;
+    btn_init = get_absolute_time();
+    bool btn_retrigger_enabled = false;
+    for (uint8_t i = 0; i < NUM_BUTTONS; i++)
+    {
+        btn_lockouts[i] = btn_init;  // Initialize lockout timestamps with current time
+        btn_state[i] = gpio_get(btn_gpio[i]);
+        btn_held[i] = 0;
+        btn_pressed[i] = 0;
+        btn_active[i] = 0;
+    }
+
 
     uint32_t blue_time_ms = 0;
     uint32_t red_time_ms = 0;
     uint32_t last_update_ms = initial_now_ms;
-    bool round_start_active = true;
     bool round_active = false;
-    uint32_t round_start_countdown_ms = initial_now_ms;
+    round_start_countdown_ms = initial_now_ms;
     uint32_t round_start_ms = 0;
     bool blue_won = false;
     bool red_won = false;
@@ -790,11 +934,86 @@ int main() {
         const uint32_t dt_ms = now_ms - last_update_ms;
         last_update_ms = now_ms;
 
-        const bool blue_pressed = button_pressed(BLUE_BUTTON_PIN);
-        const bool red_pressed = button_pressed(RED_BUTTON_PIN);
-        const bool enter_pressed = button_pressed(ENTER_BUTTON_PIN);
+
+        // Button Handling
+        // Process button inputs
+        btn_poll_time = get_absolute_time();    
+        for (uint8_t i = 0; i < NUM_BUTTONS; i++)
+        {
+            btn_time_diff = absolute_time_diff_us(btn_lockouts[i], btn_poll_time);
+            btn_new_state[i] = gpio_get(btn_gpio[i]);
+            btn_active[i] = !btn_new_state[i]; // Active low buttons
+            btn_pressed[i] = 0; // Clear button presses before detecting them 
+            
+            // If state changed and button isn't locked out
+            if ((btn_new_state[i] != btn_state[i]) && btn_time_diff > BUTTON_LOCK_TIME_MS*1000)
+            {
+                // Indicate button was pressed
+                if (!btn_new_state[i] && btn_state[i])
+                    btn_pressed[i] = 1;
+                
+                btn_lockouts[i] = btn_poll_time;
+                btn_time_diff = 0;  // Reset time difference since button was just pressed
+            }
+            btn_state[i] = btn_new_state[i];       
+            
+            // Check if button was held
+            if (btn_state[i] == 0 && btn_time_diff > BUTTON_LONG_PRESS_MS*1000)
+                btn_held[i] = 1;
+            else
+                btn_held[i] = 0;
+
+
+            // Do retrigger instead of hold if enabled
+            if (btn_retrigger_enabled && btn_state[i] == 0 && btn_time_diff > BUTTON_RETRIGGER_MS*1000)
+            {
+                btn_held[i] = 0;
+                btn_pressed[i] = 1;
+                btn_lockouts[i] = btn_poll_time;    // reset hold time
+            }
+        }  
+
+
+        // Button Handling
+        
+        if (btn_pressed[BUTTON_BOOT]) {
+            reset_usb_boot(0, 0); // Enter bootloader
+        }
+
+        if (btn_pressed[BUTTON_ENTER]) {
+            if (!menu_active) {
+                menu_active = true;
+                menu_item = GAME_START;
+                btn_pressed[BUTTON_ENTER] = 0; // Clear the button press to avoid immediately selecting the menu item
+            }
+        }
+
         display.fill(0);    // Clear display    
         display.set_cursor(0,0);
+
+        if (menu_active) {
+            // Menu is active, don't update game state
+            draw_menu();
+            handle_menu();
+        } //
+
+        if (round_start_requested) {
+            // Reset game state for a new round
+            blue_time_ms = 0;
+            red_time_ms = 0;
+            round_start_requested = false;
+            round_start_countdown_ms = now_ms;
+            round_start_active = true;
+            game_start_play_sound = true;
+            game_over_play_sound = true;
+            stop_buzzer();
+            round_active = false;
+            overtime_active = false;
+            red_won = false;
+            blue_won = false;
+            tie_game = false;
+            game_over = false;
+        }
 
         if (round_start_active) {
             uint32_t round_start_elapsed_ms = now_ms - round_start_countdown_ms;
@@ -804,9 +1023,9 @@ int main() {
                 round_start_ms = now_ms;
             }
         } else if (round_active) {
-            if (blue_pressed && !red_pressed) {
+            if (btn_active[BUTTON_BLUE] && !btn_active[BUTTON_RED]) {
                 blue_time_ms += dt_ms;
-            } else if (red_pressed && !blue_pressed) {
+            } else if (btn_active[BUTTON_RED] && !btn_active[BUTTON_BLUE]) {
                 red_time_ms += dt_ms;
             }
             
@@ -839,6 +1058,7 @@ int main() {
                 round_active = false;
                 blue_won = false;
                 red_won = false;
+                tie_game = false;
             }
         } else if (overtime_active) {
             // Overtime mechanic: losing team gets time to cap
@@ -852,8 +1072,8 @@ int main() {
 
 
             // Keep overtime alive while the current losing team is capping
-            bool blue_capping_now = !old_blue_leading && blue_pressed && !red_pressed;
-            bool red_capping_now  = !old_red_leading  && red_pressed && !blue_pressed;
+            bool blue_capping_now = !old_blue_leading && btn_active[BUTTON_BLUE] && !btn_active[BUTTON_RED];
+            bool red_capping_now  = !old_red_leading  && btn_active[BUTTON_RED] && !btn_active[BUTTON_BLUE];
 
             if (blue_capping_now || red_capping_now) {
                 overtime_end_time_ms = now_ms + overtime_current_max_time_ms;
@@ -861,10 +1081,10 @@ int main() {
 
 
             // Accumulate time for the team currently capping
-            if (red_pressed && !blue_pressed) {
+            if (btn_active[BUTTON_RED] && !btn_active[BUTTON_BLUE]) {
                 red_time_ms += dt_ms;
             }
-            else if (blue_pressed && !red_pressed) {
+            else if (btn_active[BUTTON_BLUE] && !btn_active[BUTTON_RED]) {
                 blue_time_ms += dt_ms;
             }
 
@@ -953,11 +1173,11 @@ int main() {
         bool blue_capping = false;
         bool red_capping = false;
         if (round_active) {
-            blue_capping = blue_pressed && !red_pressed;
-            red_capping = red_pressed && !blue_pressed;
+            blue_capping = btn_active[BUTTON_BLUE] && !btn_active[BUTTON_RED];
+            red_capping = btn_active[BUTTON_RED] && !btn_active[BUTTON_BLUE];
         } else if (overtime_active) {
-            blue_capping = blue_pressed && !red_pressed;
-            red_capping = red_pressed && !blue_pressed;
+            blue_capping = btn_active[BUTTON_BLUE] && !btn_active[BUTTON_RED];
+            red_capping = btn_active[BUTTON_RED] && !btn_active[BUTTON_BLUE];
         }
 
         // This render uses a centered fill: the score grows from the middle toward each side.
@@ -1020,42 +1240,36 @@ int main() {
         } else if (tie_game) {
             round_status = "tie";
         }
-
+        
         printf("B:%lu R:%lu blue:%d red:%d boot:%d round:%s pattern_speed:%f\r",
                (unsigned long) blue_time_ms,
                (unsigned long) red_time_ms,
-               blue_pressed,
-               red_pressed,
-               button_pressed(BOOT_BUTTON_PIN),
+               btn_active[BUTTON_BLUE],
+               btn_active[BUTTON_RED],
+               btn_state[BUTTON_BOOT],
                round_status,
                 pattern_speed);
         // also show debug on display
-        display.print_num("B:%d\n",blue_time_ms);
-        display.print_num("R:%d\n",red_time_ms);
-        if (round_active){
-            display.print("Round: 1\n");
-        } else {
-            display.print("Round: 0\n");
-        }
-        if (overtime_active){
-            display.print("Overtime: 1\n");
-        } else {
-            display.print("Overtime: 0\n");
-        }
-        display.print_num("Overtimeflips: %d\n",overtime_flips);
-        if (buzzer.on){
-            display.print("Buzzer: 1\n");
-        } else {
-            display.print("Buzzer: 0\n");
-        }
-        
-        // Do button stuff here
-        if (button_pressed(BOOT_BUTTON_PIN)) {
-            sleep_ms(20);
-            if (button_pressed(BOOT_BUTTON_PIN)) {
-                reset_usb_boot(0, 0);
-            }
-        }
+        // Debug print
+        // display.print_num("B:%d\n",blue_time_ms);
+        // display.print_num("R:%d\n",red_time_ms);
+        // if (round_active){
+        //     display.print("Round: 1\n");
+        // } else {
+        //     display.print("Round: 0\n");
+        // }
+        // if (overtime_active){
+        //     display.print("Overtime: 1\n");
+        // } else {
+        //     display.print("Overtime: 0\n");
+        // }
+        // display.print_num("Overtimeflips: %d\n",overtime_flips);
+        // if (buzzer.on){
+        //     display.print("Buzzer: 1\n");
+        // } else {
+        //     display.print("Buzzer: 0\n");
+        // }
+
         
         display.render();
         sleep_ms(10); // Need sleep to show leds

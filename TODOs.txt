@@ -15,13 +15,18 @@ Minor bugs:
     - Pot to control adjustment, do like 5 sec increments
     - 1 of the footswitches to change editing.
     - Enter button
-[] Add start round option in oled
+[x] Add start round option in oled
 [x] Add Buzzer
     [x] Add 3+ levels of beeping, 1hz, 3hz, 5hz. Could also have different types of beats for gameplay
      - eg double beeps for capping
     [x] Use for timers
-    
 [x] Added Screen
+
+[] Added debug info back into screen during gameplay
+
+Refactoring to do
+[] Have a game state machine instead of state flags.
+[] Create a function to have a fresh game state when requesting a new round. There's a ton of flags to set here.
 
 Stretch Goals:
 [] Audio
