@@ -42,6 +42,7 @@ extern "C" {
 #define BLUE_BUTTON_PIN 2
 #define BOOT_BUTTON_PIN 16
 #define RED_BUTTON_PIN 6
+#define ENTER_BUTTON_PIN 17
 #define BUZZER_PIN 7
 #define THROTTLE_ADC_GPIO 26
 #define THROTTLE_ADC_CHANNEL 0
@@ -51,6 +52,8 @@ extern "C" {
 // Game Stuff
 #define DEFAULT_WIN_TIME 5 // Time to hold to win round
 #define DEFAULT_ROUND_TIME 10 // Time for round to end
+#define ROUND_START_TIME 10 // Time for the round start countdown
+#define ROUND_START_END_BEEP_DURATION 2000 // Duration of the round start end beep in milliseconds
 #define OVERTIME_MS 10000 // Time losing team has to cap during overtime
 
 #define FLASH_TIME_MS 500 // Time between flashing
@@ -231,8 +234,8 @@ static void update_buzzer(uint32_t now_ms,uint32_t overtime_remaining_ms) {
             }
             break;
         case BeepPattern::GAME_START:
-            // 1 Hz pattern for 3 seconds, then 2 seconds ON
-            if (buzzer.beep_count < 3) {
+            // 1 Hz pattern for ROUND_START_TIME seconds, then ROUND_START_END_BEEP_DURATION seconds ON
+            if (buzzer.beep_count < ROUND_START_TIME) {
 
                 buzzer.on = !buzzer.on;
                 buzzer_output(buzzer.on);
@@ -242,18 +245,18 @@ static void update_buzzer(uint32_t now_ms,uint32_t overtime_remaining_ms) {
                 } else {
                     buzzer.beep_count++;
 
-                    if (buzzer.beep_count < 3) {
+                    if (buzzer.beep_count < ROUND_START_TIME) {
                         buzzer.next_change_ms = now_ms + 900;
                     } else {
-                        // Finished 3 beeps, turn ON solid for 2 seconds
+                        // Finished ROUND_START_TIME beeps, turn ON solid for ROUND_START_END_BEEP_DURATION seconds
                         buzzer.on = true;
                         buzzer_output(true);
-                        buzzer.next_change_ms = now_ms + 2000;
+                        buzzer.next_change_ms = now_ms + ROUND_START_END_BEEP_DURATION;
                     }
                 }
 
             } else {
-                // Finished 2 second solid tone
+                // Finished ROUND_START_END_BEEP_DURATION second solid tone
                 buzzer.on = false;
                 buzzer_output(false);
                 buzzer.pattern = BeepPattern::NONE;
@@ -445,9 +448,11 @@ static void render_rope(uint32_t blue_color, uint32_t red_color,
     uint32_t neutral_color, uint32_t round_timer_color, uint32_t overtime_timer_color,
     uint32_t blue_time_ms, uint32_t red_time_ms, uint32_t win_time_ms,
     bool blue_capping, bool red_capping, bool blue_won, bool red_won,
-    bool round_active, bool tie_game, bool overtime_active, uint32_t now_ms,
+    bool round_start_active, bool round_active, bool tie_game, bool overtime_active,
+    uint32_t now_ms,
     uint32_t round_start_ms, uint32_t round_time_ms, uint32_t overtime_end_time_ms,
-    uint32_t overtime_current_max_time_ms,
+    uint32_t overtime_current_max_time_ms, uint32_t round_start_countdown_ms,
+    uint32_t round_start_duration_ms,
     int phase_index) {
     const int center = NUM_LEDS / 2;
 
@@ -462,6 +467,17 @@ static void render_rope(uint32_t blue_color, uint32_t red_color,
     }
 
     const int timer_distance = (int) (round_progress * center);
+
+    int round_start_depleted_distance = 0;
+    if (round_start_active && round_start_duration_ms > 0u) {
+        uint32_t round_start_elapsed_ms = now_ms - round_start_countdown_ms;
+        if (round_start_elapsed_ms < round_start_duration_ms) {
+            float round_start_progress =
+                (float) round_start_elapsed_ms / (float) round_start_duration_ms;
+            round_start_depleted_distance =
+                (int) (round_start_progress * center);
+        }
+    }
 
     // Calculate a separate phase for the slower winning pattern
     float winning_phase = 0.0f;
@@ -494,11 +510,26 @@ static void render_rope(uint32_t blue_color, uint32_t red_color,
     flash_on = ((now_ms / FLASH_TIME_MS) % 2u) == 0u;
 
     // Loop through each pixel
-    for (int pixel_index = 0; pixel_index < NUM_LEDS; pixel_index++) {
+    for (uint8_t pixel_index = 0; pixel_index < NUM_LEDS; pixel_index++) {
         uint32_t pixel_color = neutral_color; // Start pixel off
 
+        // Pre Round start countdown state
+        if (round_start_active) {
+            int distance_from_center = 0;
+            if (pixel_index < center) {
+                distance_from_center = center - pixel_index;
+            } else {
+                distance_from_center = pixel_index - center + 1;
+            }
+            const int round_start_lit_distance =
+                center - round_start_depleted_distance;
+            if (distance_from_center <= round_start_lit_distance) {
+                pixel_color = round_timer_color;
+            }
+        }
+
         // Keep the center neutral unless a team has actual fill
-        if (pixel_index < center) {
+        if (!round_start_active && pixel_index < center) {
             const float distance_from_center = center - pixel_index;
 
             // Blue side fills from the middle toward LED 0.
@@ -536,7 +567,7 @@ static void render_rope(uint32_t blue_color, uint32_t red_color,
                     pixel_color = hsv_to_grb_scaled(BLUE_TEAM_HUE_CONVERTED, intensity);
                 }
             }
-        } else if (pixel_index >= center) {
+        } else if (!round_start_active && pixel_index >= center) {
             const float distance_from_center = pixel_index - center + 1; // Need to offset by 1 for red side since center is really 35
 
             // Red side fills from the middle toward the far end of the strip.
@@ -655,6 +686,7 @@ int main() {
     gpio_init(BLUE_BUTTON_PIN);
     gpio_init(BOOT_BUTTON_PIN);
     gpio_init(RED_BUTTON_PIN);
+    gpio_init(ENTER_BUTTON_PIN);
     gpio_init(BUZZER_PIN);
 
     
@@ -662,11 +694,13 @@ int main() {
     gpio_set_dir(BLUE_BUTTON_PIN, GPIO_IN);
     gpio_set_dir(BOOT_BUTTON_PIN, GPIO_IN);
     gpio_set_dir(RED_BUTTON_PIN, GPIO_IN);
+    gpio_set_dir(ENTER_BUTTON_PIN, GPIO_IN);
     gpio_set_dir(BUZZER_PIN, GPIO_OUT);
 
     gpio_pull_up(BLUE_BUTTON_PIN);
     gpio_pull_up(BOOT_BUTTON_PIN);
     gpio_pull_up(RED_BUTTON_PIN);
+    gpio_pull_up(ENTER_BUTTON_PIN);
     
     gpio_put(BUZZER_PIN, false);
 
@@ -704,20 +738,27 @@ int main() {
 
     const uint32_t win_time_ms = DEFAULT_WIN_TIME * 1000u;
     const uint32_t round_time_ms = DEFAULT_ROUND_TIME * 1000u;
-    const uint32_t round_start_ms = to_ms_since_boot(get_absolute_time());
+    const uint32_t initial_now_ms = to_ms_since_boot(get_absolute_time());
+    const uint32_t round_start_duration_ms = ROUND_START_TIME * 1000u;
 
 
     uint32_t blue_time_ms = 0;
     uint32_t red_time_ms = 0;
-    uint32_t last_update_ms = round_start_ms;
-    bool round_active = true;
+    uint32_t last_update_ms = initial_now_ms;
+    bool round_start_active = true;
+    bool round_active = false;
+    uint32_t round_start_countdown_ms = initial_now_ms;
+    uint32_t round_start_ms = 0;
     bool blue_won = false;
     bool red_won = false;
     bool blue_leading = false;
     bool red_leading = false;
     bool tie_game = false;
     bool game_over = false;
+
     bool game_over_play_sound = true;
+    bool game_start_play_sound = true;
+
     float phase = 0.0f;
     
     // Overtime state
@@ -751,11 +792,18 @@ int main() {
 
         const bool blue_pressed = button_pressed(BLUE_BUTTON_PIN);
         const bool red_pressed = button_pressed(RED_BUTTON_PIN);
-
+        const bool enter_pressed = button_pressed(ENTER_BUTTON_PIN);
         display.fill(0);    // Clear display    
         display.set_cursor(0,0);
 
-        if (round_active) {
+        if (round_start_active) {
+            uint32_t round_start_elapsed_ms = now_ms - round_start_countdown_ms;
+            if (round_start_elapsed_ms >= round_start_duration_ms) {
+                round_start_active = false;
+                round_active = true;
+                round_start_ms = now_ms;
+            }
+        } else if (round_active) {
             if (blue_pressed && !red_pressed) {
                 blue_time_ms += dt_ms;
             } else if (red_pressed && !blue_pressed) {
@@ -926,6 +974,7 @@ int main() {
                     red_capping,
                     blue_won,
                     red_won,
+                    round_start_active,
                     round_active,
                     tie_game,
                     overtime_active,
@@ -934,23 +983,32 @@ int main() {
                     round_time_ms,
                     overtime_end_time_ms,
                     overtime_current_max_time_ms,
+                    round_start_countdown_ms,
+                    round_start_duration_ms,
                     phase_index);
         
 
         // Play sounds based on gameplay state
         // Testing Round active = 1 hz beep
-        // Only play the capping sound if the non leading team is capping during overtime.
+        // During overtime: Only play the capping sound if the non leading team is capping
         if((blue_capping && (!blue_leading && overtime_active)) || (red_capping && (!red_leading && overtime_active))){
+            start_beep_pattern(BeepPattern::DOUBLE_ONE_HZ,now_ms);
+        } else if (round_active && (blue_capping || red_capping)) {
             start_beep_pattern(BeepPattern::DOUBLE_ONE_HZ,now_ms);
         }
         else if (overtime_active){
             start_beep_pattern(BeepPattern::OVERTIME,now_ms);
         } else if (game_over){ // Games over
-            if (game_over_play_sound)
+            if (game_over_play_sound){
                 play_beep_pattern_once(BeepPattern::GAME_OVER,now_ms);
                 game_over_play_sound = false; // play sound once
-        } else {
-            stop_buzzer();
+            }
+        } else if (round_start_active)
+        {
+            if(game_start_play_sound){
+                play_beep_pattern_once(BeepPattern::GAME_START,now_ms);
+                game_start_play_sound = false;
+            }
         }
         
         
