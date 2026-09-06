@@ -40,7 +40,7 @@ extern "C" {
 // Pins
 #define WS2812_PIN 3
 #define BLUE_BUTTON_PIN 2
-#define BOOT_BUTTON_PIN 16
+#define BOOT_BUTTON_PIN 12
 #define RED_BUTTON_PIN 6
 #define ENTER_BUTTON_PIN 17
 #define BUZZER_PIN 7
