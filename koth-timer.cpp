@@ -46,6 +46,7 @@ extern "C" {
 #define BUZZER_PIN 7
 #define THROTTLE_ADC_GPIO 26
 #define THROTTLE_ADC_CHANNEL 0
+#define ADC_OVERSAMPLE_COUNT 16
 #define NUM_LEDS 70 // 150 is the led rope but it's too big
 #define ADC_REFERENCE_VOLTAGE 3.3f
 
@@ -55,11 +56,19 @@ extern "C" {
 #define BUTTON_RETRIGGER_MS 250
 
 // Game Stuff
-#define DEFAULT_WIN_TIME 5 // Time to hold to win round
-#define DEFAULT_ROUND_TIME 10 // Time for round to end
+#define ROUND_TIME_MIN_SECONDS 10
+#define ROUND_TIME_MAX_SECONDS 610
+#define ROUND_TIME_STEP_SECONDS 10
+#define DEFAULT_ROUND_TIME 180 // Time for round to end
+
+#define WIN_TIME_MIN_SECONDS 10
+#define WIN_TIME_MAX_SECONDS 310
+#define WIN_TIME_STEP_SECONDS 10
+#define DEFAULT_WIN_TIME 120 // Time to hold to win round
+
 #define ROUND_START_TIME 10 // Time for the round start countdown
 #define ROUND_START_END_BEEP_DURATION 2000 // Duration of the round start end beep in milliseconds
-#define OVERTIME_MS 10000 // Time losing team has to cap during overtime
+#define OVERTIME_MS 20000 // Time losing team has to cap during overtime
 
 #define FLASH_TIME_MS 500 // Time between flashing
 #define OVERTIME_FLASH_TIME_MS 150 // Faster flash interval for the overtime timer
@@ -112,6 +121,16 @@ static inline bool button_pressed(uint gpio) {
     return !gpio_get(gpio);
 }
 
+static uint16_t read_adc_averaged() {
+    uint32_t sample_sum = 0;
+    for (uint8_t sample_index = 0;
+         sample_index < ADC_OVERSAMPLE_COUNT;
+         sample_index++) {
+        sample_sum += adc_read();
+    }
+    return (uint16_t)(sample_sum / ADC_OVERSAMPLE_COUNT);
+}
+
 typedef enum
 {
     BUTTON_BLUE,
@@ -123,24 +142,29 @@ typedef enum
 
 // Menu stuff
 enum MenuItem {
-    GAME_START,
+    START_GAME,
     ROUND_TIME,
     WIN_TIME,
+    ENTER_BOOT,
     MAX_MENU_ITEMS
+};
+
+// Make sure the index matches the enum MenuItem
+const char* menu_names[] = {
+    "START GAME",
+    "ROUND TIME",
+    "WIN TIME",
+    "ENTER BOOT"
 };
 
 // Init display with SSD1309 driver IC and a reset pin
 pico_oled display(OLED_SSD1309, DISPLAY_I2C_ADDR, DISPLAY_WIDTH, DISPLAY_HEIGHT, /*reset_gpio=*/ 15);
 
-uint8_t menu_item = GAME_START;
+uint8_t menu_item = START_GAME;
 bool menu_active = true; // Start in menu mode for now, can change later
-
-// Make sure the index matches the enum MenuItem
-const char* menu_names[] = {
-    "GAME START",
-    "ROUND TIME",
-    "WIN TIME"
-};
+bool menu_editing = false;
+uint32_t configured_round_time_seconds = DEFAULT_ROUND_TIME;
+uint32_t configured_win_time_seconds = DEFAULT_WIN_TIME;
 
 uint8_t btn_new_state[NUM_BUTTONS];
 absolute_time_t btn_poll_time;
@@ -162,22 +186,59 @@ void draw_menu()
 {
     display.fill(0); // clear display
     display.set_cursor(0,0);
+
+    if (menu_editing) {
+        display.print("EDITING\n");
+        if (menu_item == ROUND_TIME) {
+            display.print("ROUND TIME\n");
+            display.print("VALUE: ");
+            display.print_num("%d", configured_round_time_seconds);
+            display.print("s\n");
+        } else if (menu_item == WIN_TIME) {
+            display.print("WIN TIME\n");
+            display.print("VALUE: ");
+            display.print_num("%d", configured_win_time_seconds);
+            display.print("s\n");
+        }
+        display.print("\n\rENTER TO SAVE");
+        display.render();
+        return;
+    }
+
     display.print("SETTINGS\n");
     uint8_t menu_text_y = display.get_font_height(); // first element after settings title
     // Loop through menu items and display the text. If the menu is selected draw ">" in front of text
-    for (uint8_t menu_index = GAME_START; menu_index < MAX_MENU_ITEMS; menu_index++)
+    for (uint8_t menu_index = START_GAME; menu_index < MAX_MENU_ITEMS; menu_index++)
     {
         if (menu_index == menu_item)
         {
-            // display draw with box
+            // display draw with ">"
             display.print(">");
             display.print(menu_names[menu_index]);
+            if (menu_index == ROUND_TIME) {
+                display.print(" ");
+                display.print_num("%d", configured_round_time_seconds);
+                display.print("s");
+            } else if (menu_index == WIN_TIME) {
+                display.print(" ");
+                display.print_num("%d", configured_win_time_seconds);
+                display.print("s");
+            }
         }
         else
         {
-            // display draw without box
+            // display draw with space in front of text
             display.print(" ");
             display.print(menu_names[menu_index]);
+            if (menu_index == ROUND_TIME) {
+                display.print(" ");
+                display.print_num("%d", configured_round_time_seconds);
+                display.print("s");
+            } else if (menu_index == WIN_TIME) {
+                display.print(" ");
+                display.print_num("%d", configured_win_time_seconds);
+                display.print("s");
+            }
         }
         display.print("\n\r");
         menu_text_y += display.get_font_height(); // Move to next row
@@ -189,14 +250,14 @@ void menu_up()
 {
     menu_item++;
     if (menu_item >= MAX_MENU_ITEMS)
-        menu_item = GAME_START;
+        menu_item = START_GAME;
 
     draw_menu();
 }
 
 void menu_down()
 {
-    if(menu_item == GAME_START)
+    if(menu_item == START_GAME)
         menu_item = MAX_MENU_ITEMS-1;
     else
         menu_item--;
@@ -206,10 +267,48 @@ void menu_down()
 
 void handle_menu()
 {
-    // just for now, we'll just exit the menu on enter press, but we can add more functionality later
+    if (menu_editing) {
+        if (menu_item == ROUND_TIME) {
+            static uint16_t last_raw = 0;
+            uint16_t raw = read_adc_averaged();
+            uint32_t step_count =
+                (ROUND_TIME_MAX_SECONDS - ROUND_TIME_MIN_SECONDS) /
+                ROUND_TIME_STEP_SECONDS;
+            // Only update the round time if the raw ADC value has changed significantly to avoid jitter
+            if (abs((int)raw - (int)last_raw) > 20) {
+                last_raw = raw;
+                uint32_t selected_step = ((uint32_t) raw * step_count) / 4095u;
+                configured_round_time_seconds =
+                    ROUND_TIME_MIN_SECONDS + selected_step * ROUND_TIME_STEP_SECONDS;
+            }
+        } else if (menu_item == WIN_TIME) {
+            static uint16_t last_raw = 0;
+            uint16_t raw = read_adc_averaged();
+            uint32_t step_count =
+                (WIN_TIME_MAX_SECONDS - WIN_TIME_MIN_SECONDS) /
+                WIN_TIME_STEP_SECONDS;
+            // Only update the win time if the raw ADC value has changed significantly to avoid jitter
+            if (abs((int)raw - (int)last_raw) > 20) {
+                last_raw = raw;
+                uint32_t selected_step = ((uint32_t) raw * step_count) / 4095u;
+                configured_win_time_seconds =
+                    WIN_TIME_MIN_SECONDS + selected_step * WIN_TIME_STEP_SECONDS;
+            }
+        }
+
+        if (btn_pressed[BUTTON_ENTER]) {
+            menu_editing = false;
+            draw_menu();
+        } else {
+            draw_menu();
+        }
+        return;
+    }
+
+    // Enter button pressed, select menu item
     if (btn_pressed[BUTTON_ENTER]) {
         switch (menu_item) {
-            case GAME_START:
+            case START_GAME:
                 printf("Selected GAME START\n");
                 waiting_for_round_start = false;
                 round_start_requested = true;
@@ -217,11 +316,21 @@ void handle_menu()
                 break;
 
             case ROUND_TIME:
-                printf("Selected ROUND TIME\n");
+                printf("Editing ROUND TIME\n");
+                menu_editing = true;
+                draw_menu();
                 break;
 
             case WIN_TIME:
-                printf("Selected WIN TIME\n");
+                printf("Editing WIN TIME\n");
+                menu_editing = true;
+                draw_menu();
+                break;
+
+            case ENTER_BOOT:
+                printf("Entering bootloader\n");
+                // Enter bootloader mode
+                reset_usb_boot(0, 0);
                 break;
         }
     }
@@ -240,7 +349,8 @@ enum class BeepPattern {
     TWO_HZ,
     THREE_HZ,
     DOUBLE_ONE_HZ,
-    GAME_START,
+    TRIPLE_ONE_HZ,
+    START_GAME,
     GAME_OVER,
     OVERTIME
 };
@@ -362,7 +472,27 @@ static void update_buzzer(uint32_t now_ms,uint32_t overtime_remaining_ms) {
                 }
             }
             break;
-        case BeepPattern::GAME_START:
+        case BeepPattern::TRIPLE_ONE_HZ:
+
+            buzzer.on = !buzzer.on;
+            buzzer_output(buzzer.on);
+
+            if (buzzer.on) {
+                buzzer.next_change_ms = now_ms + 100;
+            } else {
+                buzzer.beep_count++;
+
+                if (buzzer.beep_count < 3) {
+                    // Short gap before second beep
+                    buzzer.next_change_ms = now_ms + 100;
+                } else {
+                    // Wait for next pair
+                    buzzer.beep_count = 0;
+                    buzzer.next_change_ms = now_ms + 600;
+                }
+            }
+            break;
+        case BeepPattern::START_GAME:
             // 1 Hz pattern for ROUND_START_TIME seconds, then ROUND_START_END_BEEP_DURATION seconds ON
             if (buzzer.beep_count < ROUND_START_TIME) {
 
@@ -867,8 +997,8 @@ int main() {
     const uint32_t overtime_timer_color = hsv_to_grb(OVERTIME_TIMER_HUE_CONVERTED, OVERTIME_TIMER_HUE_SATURATION, 200); // Overtime timer LED.
     const uint32_t neutral_rope_color = 0u;                        // Dark rope when idle.
 
-    const uint32_t win_time_ms = DEFAULT_WIN_TIME * 1000u;
-    const uint32_t round_time_ms = DEFAULT_ROUND_TIME * 1000u;
+    uint32_t win_time_ms = configured_win_time_seconds * 1000u;
+    uint32_t round_time_ms = configured_round_time_seconds * 1000u;
     const uint32_t initial_now_ms = to_ms_since_boot(get_absolute_time());
     const uint32_t round_start_duration_ms = ROUND_START_TIME * 1000u;
 
@@ -985,7 +1115,7 @@ int main() {
         if (btn_pressed[BUTTON_ENTER]) {
             if (!menu_active) {
                 menu_active = true;
-                menu_item = GAME_START;
+                menu_item = START_GAME;
                 btn_pressed[BUTTON_ENTER] = 0; // Clear the button press to avoid immediately selecting the menu item
             }
         }
@@ -1004,6 +1134,8 @@ int main() {
             blue_time_ms = 0;
             red_time_ms = 0;
             round_start_requested = false;
+            win_time_ms = configured_win_time_seconds * 1000u;
+            round_time_ms = configured_round_time_seconds * 1000u;
             round_start_countdown_ms = now_ms;
             round_start_active = true;
             game_start_play_sound = true;
@@ -1150,7 +1282,7 @@ int main() {
 
         // Read the throttle ADC and use it to control the moving pattern speed.
         // This lets the rope animate faster or slower based on the live input signal.
-        uint16_t raw = adc_read();
+        uint16_t raw = read_adc_averaged();
         float throttle_normalized = raw / 4095.0f;
         float pattern_speed = PATTERN_SPEED;
 
@@ -1213,10 +1345,15 @@ int main() {
         // Play sounds based on gameplay state
         // Testing Round active = 1 hz beep
         // During overtime: Only play the capping sound if the non leading team is capping
-        if((blue_capping && (!blue_leading && overtime_active)) || (red_capping && (!red_leading && overtime_active))){
+        // For Blue Capping use DOUBLE_ONE_HZ beep pattern, for Red Capping use TRIPLE_ONE_HZ beep pattern
+        if((blue_capping && (!blue_leading && overtime_active))){
             start_beep_pattern(BeepPattern::DOUBLE_ONE_HZ,now_ms);
-        } else if (round_active && (blue_capping || red_capping)) {
+        } else if((red_capping && (!red_leading && overtime_active))){
+            start_beep_pattern(BeepPattern::TRIPLE_ONE_HZ,now_ms);
+        } else if (round_active && blue_capping) {
             start_beep_pattern(BeepPattern::DOUBLE_ONE_HZ,now_ms);
+        } else if (round_active && red_capping) {
+            start_beep_pattern(BeepPattern::TRIPLE_ONE_HZ,now_ms);
         }
         else if (overtime_active){
             start_beep_pattern(BeepPattern::OVERTIME,now_ms);
@@ -1225,10 +1362,9 @@ int main() {
                 play_beep_pattern_once(BeepPattern::GAME_OVER,now_ms);
                 game_over_play_sound = false; // play sound once
             }
-        } else if (round_start_active || buzzer.pattern == BeepPattern::GAME_START)
-        {
+        } else if (round_start_active || buzzer.pattern == BeepPattern::START_GAME){
             if(game_start_play_sound){
-                play_beep_pattern_once(BeepPattern::GAME_START,now_ms);
+                play_beep_pattern_once(BeepPattern::START_GAME,now_ms);
                 game_start_play_sound = false;
             }
         } else {

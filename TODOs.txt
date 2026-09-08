@@ -11,7 +11,7 @@ Minor bugs:
 [x] Add a startup sequence for round start.
     [x] 10 second count down on leds.
 [x] Add Round Timer LED? Could be a single LED that moves from center to each end
-[] Add configuration of win and round time. Can use the buttons and a pot for controls. 
+[x] Add configuration of win and round time. Can use the buttons and a pot for controls. 
     - Pot to control adjustment, do like 5 sec increments
     - 1 of the footswitches to change editing.
     - Enter button
