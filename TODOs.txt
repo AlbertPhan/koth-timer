@@ -1,27 +1,28 @@
 TODOs
+[] Add a different colour flash for end of Round start countdown.
+[] Wire up numpad
+
+Gamemodes:
+[] Add a bomb defuse mode.
+    [] Press Code on screen to arm.
+    [] Press Code on screen to disarm.
 
 Minor bugs:
-[x] If both teams have 0 points during overtime, overtime flips dont seem to work
-[x] During overtime if leading team is capping it will play the capping sound but I think it should play the overtime beeping.
 
-[x] Fix overtime to be over once losing team lets go of button and prevent round win until then.
-[x] Overtime: Fix when team gains leading while capping, doesn't show capping pattern
 
-    
-[x] Add a startup sequence for round start.
-    [x] 10 second count down on leds.
-[x] Add Round Timer LED? Could be a single LED that moves from center to each end
-[x] Add configuration of win and round time. Can use the buttons and a pot for controls. 
-    - Pot to control adjustment, do like 5 sec increments
-    - 1 of the footswitches to change editing.
-    - Enter button
-[x] Add start round option in oled
-[x] Add Buzzer
-    [x] Add 3+ levels of beeping, 1hz, 3hz, 5hz. Could also have different types of beats for gameplay
-     - eg double beeps for capping
-    [x] Use for timers
-[x] Added Screen
-[x] Fix Menu display, dont draw boxes for selected text just do ">"
+[] Create a more expandable menu system
+    [x] Create MenuScreen class
+    [x] Create MenuItem class
+    [x] Add more more item ids and types so menu handling knows what to do.
+        MenuItem
+            ├── display_name
+            ├── type
+            └── data
+    [] Refactor menu drawing and editing based on itemtype and itemID data
+    [] Init the menu screens and the menu items with ids
+    [] Get working main menu to swap between sub menus
+    [] Include Back to go back a menu
+
 
 [] Added debug info back into screen during gameplay
 
@@ -35,7 +36,8 @@ Stretch Goals:
 
 
 Hardware:
-[] Design Box
+[] Wire up numpad
+[x] Design Box
     - Pico
     - Button Wire inputs
     - Speaker

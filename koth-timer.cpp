@@ -140,27 +140,73 @@ typedef enum
     NUM_BUTTONS,
 } btn_map;
 
-// Menu stuff
-enum MenuItem {
-    START_GAME,
-    ROUND_TIME,
-    WIN_TIME,
-    ENTER_BOOT,
-    MAX_MENU_ITEMS
+
+class MenuItem
+{
+    public:
+        const char* display_name; // Name displayed on Menu
+        MenuItemType item_type; // Type of menu item (action, edit value, open menu, back)
+        MenuItemID item_id;
+
+        MenuItem(const char* name, MenuItemType type, MenuItemID id = MenuItemID::MAIN_MENU)
+        {
+            display_name = name;
+            item_type = type;
+            item_id = id;
+        }
 };
 
-// Make sure the index matches the enum MenuItem
-const char* menu_names[] = {
-    "START GAME",
-    "ROUND TIME",
-    "WIN TIME",
-    "ENTER BOOT"
+// MenuItemType defines the type of menu item, which determines how it behaves when selected.
+enum MenuItemType
+{
+    START_GAME,
+    EDIT_VALUE,
+    OPEN_MENU,
+    BACK,
+    ACTION
 };
+
+// Item IDs for the actions to be preformed when selected in the menu
+enum MenuItemID
+{   
+    MAIN_MENU,
+    CLASSIC_KOTH_MENU,
+    BOMB_DEFUSE_MENU,
+    SYSTEM_MENU,
+    KOTH_ROUND_TIME,
+    KOTH_WIN_TIME,
+    BOMB_ROUND_TIME,
+    BOMB_COUNTDOWN_TIME,
+    BOMB_DEFUSE_TIME,
+    ENTER_BOOTLOADER,
+};
+
+class MenuScreen
+{
+    public:
+        const char* display_name; // Name displayed on top of menu
+        MenuItem* items;    // Array of the menu items
+        uint8_t item_count;
+        MenuItemType item_type;
+        
+
+        template <size_t N> // autodetermine item count
+        MenuScreen(const char* name, MenuItem(&menu_items)[N])
+        {
+            display_name = name;
+            items = menu_items;
+            item_count = N;
+        }
+};
+
 
 // Init display with SSD1309 driver IC and a reset pin
 pico_oled display(OLED_SSD1309, DISPLAY_I2C_ADDR, DISPLAY_WIDTH, DISPLAY_HEIGHT, /*reset_gpio=*/ 15);
 
-uint8_t menu_item = START_GAME;
+MenuItem* current_menu_item;
+MenuScreen* current_menu_screen;
+uint8_t current_menu_index = 0;
+
 bool menu_active = true; // Start in menu mode for now, can change later
 bool menu_editing = false;
 uint32_t configured_round_time_seconds = DEFAULT_ROUND_TIME;
@@ -189,12 +235,12 @@ void draw_menu()
 
     if (menu_editing) {
         display.print("EDITING\n");
-        if (menu_item == ROUND_TIME) {
+        if (current_menu_item->item_id == KOTH_ROUND_TIME) {
             display.print("ROUND TIME\n");
             display.print("VALUE: ");
             display.print_num("%d", configured_round_time_seconds);
             display.print("s\n");
-        } else if (menu_item == WIN_TIME) {
+        } else if (current_menu_item->item_id == KOTH_WIN_TIME) {
             display.print("WIN TIME\n");
             display.print("VALUE: ");
             display.print_num("%d", configured_win_time_seconds);
@@ -205,21 +251,22 @@ void draw_menu()
         return;
     }
 
-    display.print("SETTINGS\n");
+    // Print out MenuScreen Title
+    display.print(current_menu_screen->display_name);
     uint8_t menu_text_y = display.get_font_height(); // first element after settings title
     // Loop through menu items and display the text. If the menu is selected draw ">" in front of text
-    for (uint8_t menu_index = START_GAME; menu_index < MAX_MENU_ITEMS; menu_index++)
+    for (uint8_t menu_index = 0; menu_index < current_menu_screen->item_count; menu_index++)
     {
-        if (menu_index == menu_item)
+        if (menu_index == current_menu_index)
         {
             // display draw with ">"
             display.print(">");
-            display.print(menu_names[menu_index]);
-            if (menu_index == ROUND_TIME) {
+            display.print(current_menu_screen->items[menu_index].display_name);
+            if (current_menu_item->item_id == KOTH_ROUND_TIME) {
                 display.print(" ");
                 display.print_num("%d", configured_round_time_seconds);
                 display.print("s");
-            } else if (menu_index == WIN_TIME) {
+            } else if (current_menu_item->item_id == KOTH_WIN_TIME) {
                 display.print(" ");
                 display.print_num("%d", configured_win_time_seconds);
                 display.print("s");
@@ -229,12 +276,12 @@ void draw_menu()
         {
             // display draw with space in front of text
             display.print(" ");
-            display.print(menu_names[menu_index]);
-            if (menu_index == ROUND_TIME) {
+            display.print(current_menu_screen->items[menu_index].display_name);
+            if (current_menu_item->item_id == KOTH_ROUND_TIME) {
                 display.print(" ");
                 display.print_num("%d", configured_round_time_seconds);
                 display.print("s");
-            } else if (menu_index == WIN_TIME) {
+            } else if (current_menu_item->item_id == KOTH_WIN_TIME) {
                 display.print(" ");
                 display.print_num("%d", configured_win_time_seconds);
                 display.print("s");
@@ -248,53 +295,45 @@ void draw_menu()
 
 void menu_up()
 {
-    menu_item++;
-    if (menu_item >= MAX_MENU_ITEMS)
-        menu_item = START_GAME;
+    current_menu_index++;
+    if (current_menu_index >= current_menu_screen->item_count)
+        current_menu_index = 0;
 
     draw_menu();
 }
 
 void menu_down()
 {
-    if(menu_item == START_GAME)
-        menu_item = MAX_MENU_ITEMS-1;
+    if(current_menu_index == 0)
+        current_menu_index = current_menu_screen->item_count - 1;
     else
-        menu_item--;
+        current_menu_index--;
 
     draw_menu();
 }
 
+// Handles inputs in the menu menus. During editing, updates the values via the pot and enter will save and exit. Otherwise handles enter on selected item.
 void handle_menu()
-{
+{   
+    // Menu editing mode
     if (menu_editing) {
-        if (menu_item == ROUND_TIME) {
-            static uint16_t last_raw = 0;
-            uint16_t raw = read_adc_averaged();
-            uint32_t step_count =
-                (ROUND_TIME_MAX_SECONDS - ROUND_TIME_MIN_SECONDS) /
-                ROUND_TIME_STEP_SECONDS;
-            // Only update the round time if the raw ADC value has changed significantly to avoid jitter
-            if (abs((int)raw - (int)last_raw) > 20) {
+
+        // Read potentiometer value and map to the range of the setting being edited. Use a deadband to avoid jitter.
+        static uint16_t last_raw = 0;
+        uint16_t raw = read_adc_averaged();
+        // Only update the round time if the raw ADC value has changed significantly to avoid jitter
+        if (abs((int)raw - (int)last_raw) > 20) {
                 last_raw = raw;
-                uint32_t selected_step = ((uint32_t) raw * step_count) / 4095u;
-                configured_round_time_seconds =
-                    ROUND_TIME_MIN_SECONDS + selected_step * ROUND_TIME_STEP_SECONDS;
-            }
-        } else if (menu_item == WIN_TIME) {
-            static uint16_t last_raw = 0;
-            uint16_t raw = read_adc_averaged();
-            uint32_t step_count =
-                (WIN_TIME_MAX_SECONDS - WIN_TIME_MIN_SECONDS) /
-                WIN_TIME_STEP_SECONDS;
-            // Only update the win time if the raw ADC value has changed significantly to avoid jitter
-            if (abs((int)raw - (int)last_raw) > 20) {
-                last_raw = raw;
-                uint32_t selected_step = ((uint32_t) raw * step_count) / 4095u;
-                configured_win_time_seconds =
-                    WIN_TIME_MIN_SECONDS + selected_step * WIN_TIME_STEP_SECONDS;
-            }
         }
+        if (current_menu_item->item_id == KOTH_ROUND_TIME) {
+            uint32_t step_count = (ROUND_TIME_MAX_SECONDS - ROUND_TIME_MIN_SECONDS) / ROUND_TIME_STEP_SECONDS;
+            uint32_t selected_step = ((uint32_t) raw * step_count) / 4095u;
+            configured_round_time_seconds = ROUND_TIME_MIN_SECONDS + selected_step * ROUND_TIME_STEP_SECONDS;
+        } else if (current_menu_item->item_id == KOTH_WIN_TIME) {
+            uint32_t step_count = (WIN_TIME_MAX_SECONDS - WIN_TIME_MIN_SECONDS) / WIN_TIME_STEP_SECONDS;
+            uint32_t selected_step = ((uint32_t) raw * step_count) / 4095u;
+            configured_win_time_seconds = WIN_TIME_MIN_SECONDS + selected_step * WIN_TIME_STEP_SECONDS;
+        } // Add more editing cases here eg bomb defuse time, bomb countdown time, etc.
 
         if (btn_pressed[BUTTON_ENTER]) {
             menu_editing = false;
@@ -305,9 +344,9 @@ void handle_menu()
         return;
     }
 
-    // Enter button pressed, select menu item
+    // Enter button pressed, look at current menu item and perform action based on item type and id.
     if (btn_pressed[BUTTON_ENTER]) {
-        switch (menu_item) {
+        switch (current_menu_item->item_type) {
             case START_GAME:
                 printf("Selected GAME START\n");
                 waiting_for_round_start = false;
@@ -315,19 +354,27 @@ void handle_menu()
                 menu_active = false;
                 break;
 
-            case ROUND_TIME:
-                printf("Editing ROUND TIME\n");
-                menu_editing = true;
+            case OPEN_MENU:
+                printf("Opening menu: %s\n", current_menu_item->display_name);
+                current_menu_screen = (MenuScreen*)current_menu_item->item_id;
+                current_menu_index = 0;
+                current_menu_item = &current_menu_screen->items[current_menu_index];
+                draw_menu();
+                break;
+            
+            case BACK:
+                printf("Going back to previous menu\n");
+                current_menu_screen = (MenuScreen*)current_menu_item->item_id;
+                current_menu_index = 0;
+                current_menu_item = &current_menu_screen->items[current_menu_index];
                 draw_menu();
                 break;
 
-            case WIN_TIME:
-                printf("Editing WIN TIME\n");
-                menu_editing = true;
-                draw_menu();
+            case EDIT_VALUE:
+                // Start editing the value of the selected menu item
                 break;
 
-            case ENTER_BOOT:
+            case ENTER_BOOTLOADER:
                 printf("Entering bootloader\n");
                 // Enter bootloader mode
                 reset_usb_boot(0, 0);
@@ -1043,6 +1090,43 @@ int main() {
     uint32_t overtime_end_time_ms = 0;
     bool overtime_active = false;
     uint8_t overtime_flips = 0;  // Track how many times lead changed during overtime
+
+    // Menus Init
+
+    // Classic KOTH menu
+    MenuItem classic_koth_menu_items[] = {
+        MenuItem("START GAME", START_GAME),
+        MenuItem("SET WIN TIME", EDIT_VALUE, KOTH_WIN_TIME),
+        MenuItem("SET ROUND TIME", EDIT_VALUE, KOTH_ROUND_TIME),
+        MenuItem("BACK", BACK, &main_menu_screen), // Not sure if I want a pointer to the main menu or a switch statement in the menu handler to go back to main menu.
+    };
+    MenuScreen classic_koth_menu_screen("CLASSIC KOTH",classic_koth_menu_items);
+
+    // Bomb Defuse menu
+    MenuItem bomb_defuse_menu_items[] = {
+        MenuItem("START GAME"),
+        MenuItem("SET DEFUSE TIME"),
+        MenuItem("SET ROUND TIME"),
+        MenuItem("BACK"),
+    };
+    MenuScreen bomb_defuse_menu_screen("BOMB DEFUSE",bomb_defuse_menu_items);
+
+    // System menu
+    // Currently enter boot and debug menu
+    MenuItem system_menu_items[] = {
+        MenuItem("ENTER BOOT"),
+        MenuItem("DEBUG MENU"),
+        MenuItem("BACK"),
+    };
+    MenuScreen system_menu_screen("SYSTEM",system_menu_items);
+
+    // Main menu
+    MenuItem main_menu_items[] = {
+        MenuItem("CLASSIC KOTH", &classic_koth_menu_screen),
+        MenuItem("BOMB DEFUSE", &bomb_defuse_menu_screen),
+        MenuItem("SYSTEM", &system_menu_screen),
+    };
+    MenuScreen main_menu_screen("GAME MODE SELECT",main_menu_items);
 
     while (true) {
         /*
